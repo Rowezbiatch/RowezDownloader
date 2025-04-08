@@ -1,0 +1,2 @@
+[Mon Mar 24 15:51:41 2025] Kullanıcı verileri toplandı: 362945 - Rowez - IP: 192.168.56.1
+[Mon Mar 24 15:51:41 2025] RAT sunucu hatası: [WinError 10048] Normal olarak her yuva adresi (iletişim kuralı/ağ adresi/bağlantı noktası) için yalnızca bir kullanıma izin veriliyor

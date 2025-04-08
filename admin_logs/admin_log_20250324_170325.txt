@@ -1,0 +1,2 @@
+[Mon Mar 24 17:03:25 2025] Kullanıcı verileri toplandı: 877342 - Rowex - IP: 192.168.56.1
+[Mon Mar 24 17:03:25 2025] RAT sunucusu başlatıldı: 9999 portu

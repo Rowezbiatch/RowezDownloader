@@ -1,0 +1,2 @@
+[Wed Mar 26 15:55:41 2025] Kullanıcı verileri toplandı: 716016 - Rowez - IP: 192.168.56.1
+[Wed Mar 26 15:55:41 2025] İndirme sunucusu başlatıldı: 9999 portu

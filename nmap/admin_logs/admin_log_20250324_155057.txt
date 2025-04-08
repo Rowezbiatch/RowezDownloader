@@ -1,0 +1,2 @@
+[Mon Mar 24 15:50:57 2025] Kullanıcı verileri toplandı: 266264 - Rowez - IP: 192.168.56.1
+[Mon Mar 24 15:50:57 2025] RAT sunucusu başlatıldı: 9999 portu

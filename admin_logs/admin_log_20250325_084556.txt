@@ -1,0 +1,2 @@
+[Tue Mar 25 08:45:56 2025] Keylog kaydedildi: 877342 - [2025-03-25 08:45:56] [CTRL_L]
+[Tue Mar 25 08:45:56 2025] Keylog kaydedildi: 877342 - [2025-03-25 08:45:56] [CMD]

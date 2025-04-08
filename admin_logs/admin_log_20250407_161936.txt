@@ -1,0 +1,2 @@
+[Mon Apr  7 16:19:36 2025] Kullanıcı verileri toplandı: 085169 - Rowez - IP: 10.202.0.2
+[Mon Apr  7 16:19:36 2025] Uzak erişim sunucusu başlatıldı: 9999 portu

@@ -1,0 +1,2 @@
+[Tue Mar 25 08:46:32 2025] Keylog kaydedildi: 877342 - [2025-03-25 08:46:32] [ALT_L]
+[Tue Mar 25 08:46:32 2025] Keylog kaydedildi: 877342 - [2025-03-25 08:46:32] [F4]
