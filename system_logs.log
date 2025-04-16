@@ -10,3 +10,4 @@
 2025-04-08 10:12:44,411 - ERROR - Kullanýcý verileri veritabanýna kaydedilemedi: table users has no column named browser_history. Bu hata, veritabanýna yazýlamamasý veya kullanýcý ID'sinin benzersiz olmamasý gibi nedenlerden kaynaklanabilir.
 2025-04-08 10:15:11,293 - ERROR - Güncelleme kontrolü baþarýsýz: 404 Client Error: Not Found for url: https://api.github.com/repos/Rowez/RowezDownloader/releases/latest. Ýnternet baðlantýnýzý veya GitHub repository URL'sini kontrol edin.
 2025-04-08 10:17:13,859 - ERROR - Güncelleme kontrolü baþarýsýz: 404 Client Error: Not Found for url: https://api.github.com/repos/Rowez/RowezDownloader/releases/latest. Ýnternet baðlantýnýzý veya GitHub repository URL'sini kontrol edin.
+2025-04-09 11:43:39,662 - ERROR - Güncelleme kontrolü baþarýsýz: 404 Client Error: Not Found for url: https://api.github.com/repos/Rowez/RowezDownloader/releases/latest. Ýnternet baðlantýnýzý veya GitHub repository URL'sini kontrol edin.
